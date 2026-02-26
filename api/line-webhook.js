@@ -192,7 +192,6 @@ async function generateDispatchSheet(rawText) {
 
   if (!apiKey) {
     console.error("沒有找到 OPENAI_API_KEY 環境變數！");
-    // 安全 fallback：直接 echo 原文
     return `（系統還沒設定好 OPENAI_API_KEY，暫時先回原文）\n\n${rawText}`;
   }
 
@@ -204,7 +203,7 @@ async function generateDispatchSheet(rawText) {
         Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model: "gpt-4.1-mini", // 若沒有這個型號可改成你帳號可用的模型，例如 gpt-4.1 或 gpt-4o-mini
+        model: "gpt-4o-mini", // 換成這個，比較通用
         messages: [
           { role: "system", content: SYSTEM_PROMPT },
           { role: "user", content: rawText },
@@ -213,11 +212,40 @@ async function generateDispatchSheet(rawText) {
       }),
     });
 
+    const respText = await response.text(); // 先抓純文字方便 debug
+
     if (!response.ok) {
-      const errText = await response.text();
-      console.error("OpenAI API 回應錯誤：", response.status, errText);
+      console.error("OpenAI API 回應錯誤：", response.status, respText);
       return `（AI 處理失敗，暫時先回原文）\n\n${rawText}`;
     }
+
+    let data;
+    try {
+      data = JSON.parse(respText);
+    } catch (e) {
+      console.error("解析 OpenAI 回傳 JSON 失敗：", e, respText);
+      return `（AI 回傳格式怪怪的，暫時先回原文）\n\n${rawText}`;
+    }
+
+    const content = (data.choices?.[0]?.message?.content || "").trim();
+
+    // 嘗試把 AI 回傳的 JSON 解析出來
+    let formattedText = "";
+    try {
+      const parsed = JSON.parse(content);
+      formattedText = buildDispatchText(parsed);
+    } catch (e) {
+      console.error("解析 AI 內層 JSON 失敗：", e, content);
+      // 如果 JSON.parse 失敗，就直接把內容丟回去給你，看得懂就好
+      formattedText = content;
+    }
+
+    return formattedText || content || rawText;
+  } catch (err) {
+    console.error("呼叫 OpenAI API 發生錯誤：", err);
+    return `（AI 呼叫失敗，暫時先回原文）\n\n${rawText}`;
+  }
+}
 
     const data = await response.json();
     const content = (data.choices?.[0]?.message?.content || "").trim();
