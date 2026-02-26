@@ -85,9 +85,8 @@ const SYSTEM_PROMPT = `
 不要加任何說明文字、註解、其他欄位或程式碼區塊。
 `;
 
-// 主入口
-export default async function handler(req, res) {
-  // LINE Webhook 一定是 POST，其他直接略過
+// 主入口（CommonJS 寫法）
+async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(200).send("OK");
   }
@@ -117,7 +116,7 @@ export default async function handler(req, res) {
     if (event.type === "message" && event.message.type === "text") {
       const userText = (event.message.text || "").trim();
 
-      // 先處理兩個司機快捷指令
+      // ✅ 先處理兩個司機快捷指令
       if (userText === "陳俊豪") {
         const replyText =
           "司機：陳俊豪\n" +
@@ -144,11 +143,10 @@ export default async function handler(req, res) {
     }
   }
 
-  // 一定要回 200 告訴 LINE「我收到了」
   return res.status(200).send("OK");
 }
 
-// 呼叫 LINE Reply API 的小工具
+// 呼叫 LINE Reply API
 async function replyMessage(replyToken, text) {
   const accessToken = process.env.LINE_CHANNEL_ACCESS_TOKEN;
 
@@ -186,7 +184,7 @@ async function replyMessage(replyToken, text) {
   }
 }
 
-// 🔥 這裡是呼叫 OpenAI，幫你把一坨文字變成派車單的地方
+// 🔥 呼叫 OpenAI，幫你把一坨文字變成派車單
 async function generateDispatchSheet(rawText) {
   const apiKey = process.env.OPENAI_API_KEY;
 
@@ -203,7 +201,7 @@ async function generateDispatchSheet(rawText) {
         Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model: "gpt-4o-mini", // 換成這個，比較通用
+        model: "gpt-4o-mini", // 常用且普遍可用的模型
         messages: [
           { role: "system", content: SYSTEM_PROMPT },
           { role: "user", content: rawText },
@@ -212,7 +210,7 @@ async function generateDispatchSheet(rawText) {
       }),
     });
 
-    const respText = await response.text(); // 先抓純文字方便 debug
+    const respText = await response.text(); // 方便 debug
 
     if (!response.ok) {
       console.error("OpenAI API 回應錯誤：", response.status, respText);
@@ -229,37 +227,13 @@ async function generateDispatchSheet(rawText) {
 
     const content = (data.choices?.[0]?.message?.content || "").trim();
 
-    // 嘗試把 AI 回傳的 JSON 解析出來
+    // 再把 AI 產出的 JSON 字串 parse 出來
     let formattedText = "";
     try {
       const parsed = JSON.parse(content);
       formattedText = buildDispatchText(parsed);
     } catch (e) {
       console.error("解析 AI 內層 JSON 失敗：", e, content);
-      // 如果 JSON.parse 失敗，就直接把內容丟回去給你，看得懂就好
-      formattedText = content;
-    }
-
-    return formattedText || content || rawText;
-  } catch (err) {
-    console.error("呼叫 OpenAI API 發生錯誤：", err);
-    return `（AI 呼叫失敗，暫時先回原文）\n\n${rawText}`;
-  }
-}
-
-    const data = await response.json();
-    const content = (data.choices?.[0]?.message?.content || "").trim();
-
-    // 嘗試把 AI 回傳的 JSON 解析出來
-    let formattedText = "";
-    try {
-      const parsed = JSON.parse(content);
-
-      // 用解析好的資料，組派車單文字
-      formattedText = buildDispatchText(parsed);
-    } catch (e) {
-      console.error("解析 AI 回傳 JSON 失敗：", e, content);
-      // 如果 JSON.parse 失敗，就直接把內容丟回去給你，看得懂就好
       formattedText = content;
     }
 
@@ -284,25 +258,20 @@ function buildDispatchText(data) {
   const luggage = data.luggage || "";
   const childSeat = data.child_seat || "";
   const remark = data.remark || "";
-  // 司機資訊先預設空，未來如果你要也讓 AI 判斷再改
   const driverName = data.driver_name || "";
   const driverPhone = data.driver_phone || "";
   const carPlate = data.car_plate || "";
   const carType = data.car_type || "";
   const payment = data.payment || "";
 
-  // guest_suffix：「 等 X 位」
   let guestSuffix = "";
   if (peopleCount && peopleCount > 1) {
     guestSuffix = ` 等 ${peopleCount} 位`;
   }
 
-  // 組地址區塊
   const addressesBlock =
     addresses.length > 0
-      ? addresses
-          .map((addr, idx) => `${idx + 1}. ${addr}`)
-          .join("\n")
+      ? addresses.map((addr, idx) => `${idx + 1}. ${addr}`).join("\n")
       : "";
 
   const text =
@@ -328,3 +297,6 @@ function buildDispatchText(data) {
 
   return text;
 }
+
+// 把 handler 匯出（CommonJS）
+module.exports = handler;
