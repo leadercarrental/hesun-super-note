@@ -1,31 +1,44 @@
-// api/line-webhook.js
-
 export default async function handler(req, res) {
-  // 只處理 POST，其他直接回 OK
   if (req.method !== "POST") {
     return res.status(200).send("OK");
   }
 
   const events = req.body.events || [];
 
-  // 逐一處理 LINE 傳來的事件
   for (const event of events) {
-    // 我們先只處理「文字訊息」
     if (event.type === "message" && event.message.type === "text") {
       const userText = (event.message.text || "").trim();
 
-      // 這裡先做一個簡單版本：把你講的話原封不動回給你
-      const replyText = `你剛剛傳的是：\n${userText}`;
+      let replyText = "";
+
+      // ✅ 司機快捷：陳俊豪
+      if (userText === "陳俊豪") {
+        replyText =
+          "司機：陳俊豪\n" +
+          "電話：0973550190\n" +
+          "車號：RFD-\n" +
+          "車型：豪華新大T保母車";
+      }
+      // ✅ 司機快捷：陳正紘
+      else if (userText === "陳正紘") {
+        replyText =
+          "司機：陳正紘\n" +
+          "電話：0937429798\n" +
+          "車號：RFD-\n" +
+          "車型：豪華新大T保母車";
+      }
+      // 其他狀況：先原樣回覆（之後會改成 AI 派車單）
+      else {
+        replyText = `你剛剛傳的是：\n${userText}`;
+      }
 
       await replyMessage(event.replyToken, replyText);
     }
   }
 
-  // 一定要回 200 給 LINE，表示 Webhook 收到了
   return res.status(200).send("OK");
 }
 
-// 呼叫 LINE 的 Reply API
 async function replyMessage(replyToken, text) {
   const accessToken = process.env.LINE_CHANNEL_ACCESS_TOKEN;
 
