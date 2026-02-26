@@ -137,6 +137,103 @@ async function handler(req, res) {
         continue;
       }
 
+// 解析派車原始文字（不靠 AI，純規則）
+function parseDispatch(rawText) {
+  const data = {
+    job_tag: "",
+    date: "",
+    flight: "",
+    pickup_time: "",
+    guest_name: "",
+    guest_phone: "",
+    addresses: [],
+    people_count: null,
+    luggage: "",
+    child_seat: "",
+    remark: "",
+    driver_name: "",
+    driver_phone: "",
+    car_plate: "",
+    car_type: "",
+    payment: ""
+  };
+
+  const text = rawText.trim();
+  const lines = text
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
+
+  // 1) job_tag：送機 / 接機 / 單接 / 單送
+  const jobTags = ["送機", "接機", "單接", "單送"];
+  for (const tag of jobTags) {
+    if (text.includes(tag)) {
+      data.job_tag = tag;
+      break;
+    }
+  }
+
+  // 2) 日期（簡單抓 01/01、1/1、2026-02-28 這類）
+  const dateMatch =
+    text.match(/(\d{1,4}[\/.-]\d{1,2}[\/.-]\d{0,2})/) ||
+    text.match(/(\d{1,2}\/\d{1,2})/);
+  if (dateMatch) {
+    data.date = dateMatch[1];
+  }
+
+  // 3) 航班 flight：抓像 BR166 / 06:15
+  const flightMatch = text.match(/([A-Z0-9]{2,}\s*\/\s*\d{1,2}:\d{2})/);
+  if (flightMatch) {
+    data.flight = flightMatch[1].trim();
+  }
+
+  // 4) 載客時間 pickup_time：看有沒有「載客時間XX:YY」
+  const pickupMatch = text.match(/載客時間\s*([0-2]?\d:\d{2})/);
+  if (pickupMatch) {
+    data.pickup_time = pickupMatch[1];
+  }
+
+  // 5) 電話＋貴賓姓名：找 09xxxxxxxx 第一行，上一行當姓名
+  let phoneLineIndex = -1;
+  lines.forEach((line, idx) => {
+    if (/09\d{8}/.test(line) && phoneLineIndex === -1) {
+      phoneLineIndex = idx;
+      data.guest_phone = line.match(/(09\d{8})/)?.[1] || "";
+    }
+  });
+  if (phoneLineIndex > 0) {
+    data.guest_name = lines[phoneLineIndex - 1];
+  }
+
+  // 6) 地址：抓開頭是數字或序號＋有「市」或「區」的行
+  lines.forEach((line) => {
+    if (/^\d+[\.\s、]/.test(line) || /^[１２３４５６７８９]/.test(line)) {
+      // 去掉開頭的「1.」「2 」之類
+      let addr = line.replace(/^[\d１２３４５６７８９]+[.\s、]?/, "").trim();
+      if (addr.includes("市") || addr.includes("區") || addr.includes("路")) {
+        data.addresses.push(addr);
+      }
+    }
+  });
+
+  // 7) 人數：抓「7位」「7人」這種
+  const peopleMatch = text.match(/(\d+)\s*[位人]/);
+  if (peopleMatch) {
+    data.people_count = parseInt(peopleMatch[1], 10);
+  }
+
+  // 8) 收款方式 payment：抓「收現金7000」/「收現金 7000 元」
+  const payMatch = text.match(/收\s*(現金|匯款|刷卡)?\s*([\d,]+)/);
+  if (payMatch) {
+    const method = payMatch[1] || "現金";
+    const amount = payMatch[2];
+    data.payment = `${method} ${amount} 元`;
+  }
+
+  // 其他：目前先留空（行李 / 安全座椅 / 備註 等）
+  return data;
+}
+
       // 其他狀況：視為派車單原始資料，丟給 AI 整理
       const replyText = await generateDispatchSheet(userText);
       await replyMessage(event.replyToken, replyText);
@@ -185,64 +282,16 @@ async function replyMessage(replyToken, text) {
 }
 
 // 🔥 呼叫 OpenAI，幫你把一坨文字變成派車單
+// 版本：不呼叫 OpenAI，純規則解析派車單
 async function generateDispatchSheet(rawText) {
-  const apiKey = process.env.OPENAI_API_KEY;
-
-  if (!apiKey) {
-    console.error("沒有找到 OPENAI_API_KEY 環境變數！");
-    return `（系統還沒設定好 OPENAI_API_KEY，暫時先回原文）\n\n${rawText}`;
-  }
-
   try {
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        // 模型先用 gpt-4o-mini，比較多人有權限用
-        model: "gpt-4o-mini",
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: rawText },
-        ],
-        temperature: 0.2,
-      }),
-    });
-
-    const respText = await response.text(); // 把 OpenAI 回覆原封不動存下來
-
-    if (!response.ok) {
-      // 這裡把錯誤直接回給你看，方便排錯
-      console.error("OpenAI API 回應錯誤：", response.status, respText);
-      return `AI 呼叫失敗：${response.status}\n${respText}\n\n（暫時先回原文）\n${rawText}`;
-    }
-
-    let data;
-    try {
-      data = JSON.parse(respText);
-    } catch (e) {
-      console.error("解析 OpenAI 回傳 JSON 失敗：", e, respText);
-      return `AI 回傳格式怪怪的，解析失敗。\n${respText}\n\n（暫時先回原文）\n${rawText}`;
-    }
-
-    const content = (data.choices?.[0]?.message?.content || "").trim();
-
-    // 再把 AI 產出的 JSON 字串 parse 出來
-    let formattedText = "";
-    try {
-      const parsed = JSON.parse(content);
-      formattedText = buildDispatchText(parsed);
-    } catch (e) {
-      console.error("解析 AI 內層 JSON 失敗：", e, content);
-      formattedText = content;
-    }
-
-    return formattedText || content || rawText;
+    const parsed = parseDispatch(rawText);
+    const text = buildDispatchText(parsed);
+    return text;
   } catch (err) {
-    console.error("呼叫 OpenAI API 發生錯誤：", err);
-    return `AI 呼叫整體失敗：${String(err)}\n\n（暫時先回原文）\n${rawText}`;
+    console.error("解析派車資料發生錯誤：", err);
+    // 安全備援：真的炸掉就先回原文
+    return `（派車資料解析失敗，暫時先回原文）\n\n${rawText}`;
   }
 }
 
