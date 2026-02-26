@@ -85,6 +85,17 @@ async function handler(req, res) {
         await replyMessage(event.replyToken, replyText);
         continue;
       }
+
+      // ✅ 司機快捷：譚楚萍
+      if (userText === "譚楚萍") {
+        const replyText =
+          "司機：譚楚萍\n" +
+          "電話：0932636805\n" +
+          "車號：RFD-\n" +
+          "車型：豪華新大T保母車";
+        await replyMessage(event.replyToken, replyText);
+        continue;
+      }
       
       // 其他狀況：視為派車單原始資料，用規則解析
       const replyText = await generateDispatchSheet(userText);
