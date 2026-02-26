@@ -201,7 +201,8 @@ async function generateDispatchSheet(rawText) {
         Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model: "gpt-4o-mini", // 常用且普遍可用的模型
+        // 模型先用 gpt-4o-mini，比較多人有權限用
+        model: "gpt-4o-mini",
         messages: [
           { role: "system", content: SYSTEM_PROMPT },
           { role: "user", content: rawText },
@@ -210,11 +211,12 @@ async function generateDispatchSheet(rawText) {
       }),
     });
 
-    const respText = await response.text(); // 方便 debug
+    const respText = await response.text(); // 把 OpenAI 回覆原封不動存下來
 
     if (!response.ok) {
+      // 這裡把錯誤直接回給你看，方便排錯
       console.error("OpenAI API 回應錯誤：", response.status, respText);
-      return `（AI 處理失敗，暫時先回原文）\n\n${rawText}`;
+      return `AI 呼叫失敗：${response.status}\n${respText}\n\n（暫時先回原文）\n${rawText}`;
     }
 
     let data;
@@ -222,7 +224,7 @@ async function generateDispatchSheet(rawText) {
       data = JSON.parse(respText);
     } catch (e) {
       console.error("解析 OpenAI 回傳 JSON 失敗：", e, respText);
-      return `（AI 回傳格式怪怪的，暫時先回原文）\n\n${rawText}`;
+      return `AI 回傳格式怪怪的，解析失敗。\n${respText}\n\n（暫時先回原文）\n${rawText}`;
     }
 
     const content = (data.choices?.[0]?.message?.content || "").trim();
@@ -240,7 +242,7 @@ async function generateDispatchSheet(rawText) {
     return formattedText || content || rawText;
   } catch (err) {
     console.error("呼叫 OpenAI API 發生錯誤：", err);
-    return `（AI 呼叫失敗，暫時先回原文）\n\n${rawText}`;
+    return `AI 呼叫整體失敗：${String(err)}\n\n（暫時先回原文）\n${rawText}`;
   }
 }
 
