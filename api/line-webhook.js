@@ -1,7 +1,7 @@
 // api/line-webhook.js
-// 賀森超強筆記 v1：純規則版派車單整理＋司機快捷
+// 賀森超強筆記 v1.5：純規則派車單整理＋司機快捷
 
-// 主入口（CommonJS 寫法）
+// 主入口（CommonJS）
 async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(200).send("OK");
@@ -32,7 +32,7 @@ async function handler(req, res) {
     if (event.type === "message" && event.message.type === "text") {
       const userText = (event.message.text || "").trim();
 
-      // ✅ 先處理兩個司機快捷指令
+      // ✅ 司機快捷：陳俊豪
       if (userText === "陳俊豪") {
         const replyText =
           "司機：陳俊豪\n" +
@@ -43,6 +43,7 @@ async function handler(req, res) {
         continue;
       }
 
+      // ✅ 司機快捷：陳正紘
       if (userText === "陳正紘") {
         const replyText =
           "司機：陳正紘\n" +
@@ -53,6 +54,38 @@ async function handler(req, res) {
         continue;
       }
 
+      // ✅ 司機快捷：蔣金海
+      if (userText === "蔣金海") {
+        const replyText =
+          "司機：蔣金海\n" +
+          "電話：09157547765\n" +
+          "車號：RFD-\n" +
+          "車型：豪華新大T保母車";
+        await replyMessage(event.replyToken, replyText);
+        continue;
+      }
+      // ✅ 司機快捷：葉俊麟
+      if (userText === "葉俊麟") {
+        const replyText =
+          "司機：葉俊麟\n" +
+          "電話：0921097732\n" +
+          "車號：RFD-3200\n" +
+          "車型：豪華新大T保母車";
+        await replyMessage(event.replyToken, replyText);
+        continue;
+      }
+
+      // ✅ 司機快捷：張啟隆
+      if (userText === "張啟隆") {
+        const replyText =
+          "司機：張啟隆\n" +
+          "電話：0919625653\n" +
+          "車號：RFD-3192\n" +
+          "車型：豪華新大T保母車";
+        await replyMessage(event.replyToken, replyText);
+        continue;
+      }
+      
       // 其他狀況：視為派車單原始資料，用規則解析
       const replyText = await generateDispatchSheet(userText);
       await replyMessage(event.replyToken, replyText);
@@ -100,6 +133,26 @@ async function replyMessage(replyToken, text) {
   }
 }
 
+// ------- 純規則解析區 -------
+
+// 簡單把中文數字（一二三四五六七八九十兩）轉成阿拉伯數字
+function chineseDigitToNumber(ch) {
+  const map = {
+    "一": 1,
+    "二": 2,
+    "三": 3,
+    "四": 4,
+    "五": 5,
+    "六": 6,
+    "七": 7,
+    "八": 8,
+    "九": 9,
+    "十": 10,
+    "兩": 2
+  };
+  return map[ch] || null;
+}
+
 // 解析派車原始文字（不靠 AI，純規則）
 function parseDispatch(rawText) {
   const data = {
@@ -127,6 +180,9 @@ function parseDispatch(rawText) {
     .map((l) => l.trim())
     .filter((l) => l.length > 0);
 
+  // 用來記錄哪些行已經被用途占用（避免丟到備註）
+  const usedLineIndex = new Set();
+
   // 1) job_tag：送機 / 接機 / 單接 / 單送
   const jobTags = ["送機", "接機", "單接", "單送"];
   for (const tag of jobTags) {
@@ -136,25 +192,42 @@ function parseDispatch(rawText) {
     }
   }
 
-  // 2) 日期（簡單抓 01/01、1/1、2026-02-28 這類）
-  // 先抓像 2026-02-28 或 2026/02/28
+  // 2) 日期：抓 2026-02-28 或 2/27 這種
   let dateMatch =
     safeText.match(/(\d{4}[\/.-]\d{1,2}[\/.-]\d{1,2})/) ||
     safeText.match(/(\d{1,2}[\/.-]\d{1,2})/);
   if (dateMatch) {
     data.date = dateMatch[1];
+    // 推測日期大多在第一行，標記第一行為已使用
+    if (lines.length > 0 && lines[0].includes(data.date)) {
+      usedLineIndex.add(0);
+    }
   }
 
-  // 3) 航班 flight：抓像 BR166 / 06:15
+  // 3) 航班 flight：抓像 BR166 / 06:15 或 JX851/19:05
   const flightMatch = safeText.match(/([A-Z0-9]{2,}\s*\/\s*\d{1,2}:\d{2})/);
   if (flightMatch) {
     data.flight = flightMatch[1].trim();
+    // 找是在哪一行
+    lines.forEach((line, idx) => {
+      if (line.includes(data.flight)) {
+        usedLineIndex.add(idx);
+      }
+    });
   }
 
   // 4) 載客時間 pickup_time：看有沒有「載客時間00:45」這類
   const pickupMatch = safeText.match(/載客時間\s*([0-2]?\d:\d{2})/);
   if (pickupMatch) {
     data.pickup_time = pickupMatch[1];
+  }
+
+  // ✅ 如果是接機，且沒有提供載客時間，則用航班時間當載客時間
+  if (!data.pickup_time && data.job_tag === "接機" && data.flight) {
+    const timeInFlight = data.flight.match(/(\d{1,2}:\d{2})/);
+    if (timeInFlight) {
+      data.pickup_time = timeInFlight[1];
+    }
   }
 
   // 5) 電話＋貴賓姓名：找 09xxxxxxxx 第一行，上一行當姓名
@@ -168,34 +241,171 @@ function parseDispatch(rawText) {
   });
   if (phoneLineIndex > 0) {
     data.guest_name = lines[phoneLineIndex - 1];
+    usedLineIndex.add(phoneLineIndex);
+    usedLineIndex.add(phoneLineIndex - 1);
   }
 
-  // 6) 地址：抓開頭是數字或序號＋有「市」或「區」或「路」的行
-  lines.forEach((line) => {
+  // 6) 地址：先抓開頭有序號的，再抓沒有序號但看起來是地址的，再支援一行多個地址
+  const addressCandidates = [];
+
+  // (a) 有序號的行
+  lines.forEach((line, idx) => {
     if (/^\d+[\.\s、]/.test(line) || /^[１２３４５６７８９]/.test(line)) {
-      // 去掉開頭的「1.」「2 」之類
       let addr = line.replace(/^[\d１２３４５６７８９]+[.\s、]?/, "").trim();
-      if (addr.includes("市") || addr.includes("區") || addr.includes("路")) {
-        data.addresses.push(addr);
-      }
+      addressCandidates.push({ addr, idx, source: "numbered" });
     }
   });
 
-  // 7) 人數：抓「7位」「7人」這種
+  // (b) 沒有序號但看起來像地址的行（有 市/區/路/街/巷/號 等）
+  lines.forEach((line, idx) => {
+    const hasAddressMarker = /[市區鄉鎮路街巷村里號]/.test(line);
+    const hasPhone = /09\d{8}/.test(line);
+    const looksLikePayment = /收\s*[\d,]+/.test(line);
+    const looksLikeFlight = /[A-Z0-9]{2,}\s*\/\s*\d{1,2}:\d{2}/.test(line);
+    if (hasAddressMarker && !hasPhone && !looksLikePayment && !looksLikeFlight) {
+      addressCandidates.push({ addr: line.trim(), idx, source: "plain" });
+    }
+  });
+
+  // (c) 一行多個地址：用「、，,；;」切開
+  const extraCandidates = [];
+  addressCandidates.forEach((item) => {
+    const parts = item.addr.split(/[、，,；;]/);
+    if (parts.length > 1) {
+      parts.forEach((p) => {
+        const seg = p.trim();
+        if (seg.length === 0) return;
+        if (/[市區鄉鎮路街巷村里號]/.test(seg)) {
+          extraCandidates.push({ addr: seg, idx: item.idx, source: "split" });
+        }
+      });
+    }
+  });
+
+  const allAddressCandidates = [...addressCandidates, ...extraCandidates];
+
+  const addrSet = new Set();
+  allAddressCandidates.forEach((item) => {
+    if (!item.addr) return;
+    if (!/[市區鄉鎮路街巷村里號]/.test(item.addr)) return;
+    const key = item.addr;
+    if (!addrSet.has(key)) {
+      addrSet.add(key);
+      data.addresses.push(item.addr);
+      usedLineIndex.add(item.idx);
+    }
+  });
+
+  // 7) 人數
+  // 7-1 阿拉伯數字：7位 / 7人
   const peopleMatch = safeText.match(/(\d+)\s*[位人]/);
   if (peopleMatch) {
     data.people_count = parseInt(peopleMatch[1], 10);
+  } else {
+    // 7-2 中文數字：「人數五位貴賓」或「五位貴賓」
+    const peopleMatchCn =
+      safeText.match(/人數.*?([一二三四五六七八九十兩])\s*[位人]/) ||
+      safeText.match(/([一二三四五六七八九十兩])\s*位貴賓/);
+    if (peopleMatchCn) {
+      const n = chineseDigitToNumber(peopleMatchCn[1]);
+      if (n) data.people_count = n;
+    }
   }
 
-  // 8) 收款方式 payment：抓「收現金7000」/「收現金 7000 元」
+  // 人數行從備註中排除
+  lines.forEach((line, idx) => {
+    if (/人數/.test(line) || /位貴賓/.test(line)) {
+      usedLineIndex.add(idx);
+    }
+  });
+
+  // 8) 收款方式 payment：支援「收現金7000」「收現金 7000」「收 7000」
   const payMatch = safeText.match(/收\s*(現金|匯款|刷卡)?\s*([\d,]+)/);
   if (payMatch) {
     const method = payMatch[1] || "現金";
     const amount = payMatch[2];
     data.payment = `${method} ${amount} 元`;
   }
+  lines.forEach((line, idx) => {
+    if (/收\s*(現金|匯款|刷卡)?\s*([\d,]+)/.test(line)) {
+      usedLineIndex.add(idx);
+    }
+  });
 
-  // 目前其他欄位（行李 / 安全座椅 / 備註 / 司機等）先留空
+  // 9) 安全座椅：例如「小朋友 1 位 要安全座椅」
+  const childSeatMatch =
+    safeText.match(/(小朋友|小孩|兒童).*?(\d+)[\s]*位.*(安全座椅|兒童座椅)/) ||
+    safeText.match(/(小朋友|小孩|兒童).*?([一二三四五六七八九十兩])[\s]*位.*(安全座椅|兒童座椅)/) ||
+    safeText.match(/(安全座椅|兒童座椅)/);
+  if (childSeatMatch) {
+    let count = "";
+    if (childSeatMatch[2]) {
+      if (/^\d+$/.test(childSeatMatch[2])) {
+        count = childSeatMatch[2];
+      } else {
+        const n = chineseDigitToNumber(childSeatMatch[2]);
+        if (n) count = String(n);
+      }
+    }
+    if (count) {
+      data.child_seat = `需要安全座椅 ${count} 位`;
+    } else {
+      data.child_seat = "需要安全座椅";
+    }
+
+    // 將包含安全座椅字樣的行從備註中排除（或讓它同時進備註也可以，看你習慣）
+    lines.forEach((line, idx) => {
+      if (/安全座椅|兒童座椅/.test(line)) {
+        usedLineIndex.add(idx);
+      }
+    });
+  }
+
+  // 10) 車型：若文字中提到特定車型，就寫到 car_type
+  if (/豪華新?大T/.test(safeText)) {
+    data.car_type = "豪華新大T保母車";
+  } else if (/大\s*T|大T/.test(safeText)) {
+    data.car_type = "大T";
+  } else if (/Caddy/i.test(safeText)) {
+    data.car_type = "Caddy";
+  } else if (/Touran/i.test(safeText)) {
+    data.car_type = "Touran";
+  }
+
+  // 11) 備註：將「看起來不屬於其他欄位」的文字收集進來
+  const remarkLines = [];
+  lines.forEach((line, idx) => {
+    if (!line) return;
+
+    // 已經被用過的行先跳過
+    if (usedLineIndex.has(idx)) return;
+
+    // 明確判斷這行是什麼：如果是電話/日期/航班/人數/收款，就不要放到備註
+    if (/09\d{8}/.test(line)) return; // 電話
+    if (jobTags.some((t) => line.includes(t))) return; // 送機/接機…
+    if (/[A-Z0-9]{2,}\s*\/\s*\d{1,2}:\d{2}/.test(line)) return; // 航班
+    if (/收\s*(現金|匯款|刷卡)?\s*([\d,]+)/.test(line)) return; // 收款
+    if (/人數/.test(line) || /位貴賓/.test(line)) return; // 人數
+    if (/^\d{1,2}[\/.-]\d{1,2}/.test(line) || /\d{4}[\/.-]\d{1,2}[\/.-]\d{1,2}/.test(line)) {
+      return; // 日期
+    }
+
+    // 地址行：這裡有兩種做法：
+    //  1. 完全不要放進備註（現在採用這個）
+    //  2. 要是你之後希望備註也出現地址再調整
+    if (/[市區鄉鎮路街巷村里號]/.test(line)) {
+      // 已經在 addresses 裡的就不放備註
+      return;
+    }
+
+    // 其餘的行（例如：請至環宇接貴賓 / 貴賓會在環宇內用餐），通通當成備註的一部分
+    remarkLines.push(line);
+  });
+
+  if (remarkLines.length > 0) {
+    data.remark = remarkLines.join("\n");
+  }
+
   return data;
 }
 
@@ -232,10 +442,8 @@ function buildDispatchText(data) {
   const carType = safe.car_type || "";
   const payment = safe.payment || "";
 
-  let guestSuffix = "";
-  if (peopleCount && peopleCount > 1) {
-    guestSuffix = ` 等 ${peopleCount} 位`;
-  }
+  // 不再自動加「等 X 位」，改成單純顯示貴賓姓名
+  const guestSuffix = ""; // 若你之後想恢復可以再改
 
   const addressesBlock =
     addresses.length > 0
@@ -255,7 +463,7 @@ function buildDispatchText(data) {
     `◆人數：${peopleCount}\n` +
     `◆行李：${luggage}\n` +
     `◆有無安全座椅：${childSeat}\n\n` +
-    `🌟備註：${remark}\n\n` +
+    `🌟備註：\n${remark}\n\n` +
     `司機：${driverName}\n` +
     `電話：${driverPhone}\n` +
     `車號：${carPlate}\n` +
