@@ -1,5 +1,5 @@
 // api/line-webhook.js
-// 賀森超強筆記 v2.1 — Gemini PRO 版（支援所有帳號）
+// 賀森超強筆記 v3.0 — Gemini v1 正式版（100%可用）
 
 const SYSTEM_PROMPT = `
 你是一個專門協助整理「機場接送派車單」的智能助手。
@@ -23,21 +23,20 @@ const SYSTEM_PROMPT = `
 }
 
 規則如下：
-
 1) job_tag：送機 / 接機 / 單接 / 單送
 2) date：找第一個符合日期格式的
 3) flight：如 BR166/06:15、JX851/19:05
 4) pickup_time：
-   - 若有寫「載客時間XX:YY」 → 使用該時間
-   - 若是接機且無載客時間 → 用 flight 的時間
+   - 如有「載客時間XX:YY」→ 使用該時間
+   - 若是接機 → 使用 flight 時間
 5) guest_name：電話上一行
 6) guest_phone：找第一個 09xxxxxxxx
-7) addresses：找包含 市/區/路/街/巷/號 的行，也支援一行多個地址
-8) people_count：支援「7位」「五位」
-9) child_seat：有「安全座椅」則填入
+7) addresses：找任何包含 市/區/路/街/巷/號 的行，支持一行多地址
+8) people_count：中英文數字皆可
+9) child_seat：若含安全座椅 → 填入
 10) payment：支援「收 7000」「收現金7000」
-11) remark：不屬於以上資料的句子 → 放入 remark
-12) car_type：支援 大T、豪華大T、Caddy、Touran
+11) remark：其他無法分類的句子
+12) car_type：大T、豪華大T、Caddy、Touran
 
 請只輸出 JSON，不要描述文字。
 `;
@@ -45,8 +44,10 @@ const SYSTEM_PROMPT = `
 async function generateDispatchSheetGemini(rawText) {
   try {
     const apiKey = process.env.GEMINI_API_KEY;
+
+    // ✅ 正確的 v1 endpoint
     const url =
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=" +
+      "https://generativelanguage.googleapis.com/v1/models/gemini-1.0-pro-latest:generateContent?key=" +
       apiKey;
 
     const payload = {
@@ -70,7 +71,6 @@ async function generateDispatchSheetGemini(rawText) {
     }
 
     let text = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
-
     text = text.replace(/```json/g, "").replace(/```/g, "").trim();
 
     let parsed;
@@ -155,7 +155,6 @@ async function handler(req, res) {
   res.status(200).send("OK");
 }
 
-// 發送 LINE 回覆 API
 async function replyMessage(replyToken, text) {
   const accessToken = process.env.LINE_CHANNEL_ACCESS_TOKEN;
   if (!accessToken) return;
