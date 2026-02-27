@@ -1,7 +1,14 @@
 // api/line-webhook.js
-// 賀森超強筆記 — 純規則 Pro 版（不需要任何 AI Key）
+// 賀森超強筆記 — 純規則 Pro 版 v2
+// 不用任何外部 AI，支援：
+// - 自動判斷接機/送機
+// - 自動解析日期、航班、時間、姓名、電話、地址、人數、收款
+// - 小朋友安全座椅
+// - 備註（例如：請至環宇接貴賓）
+// - 車型關鍵字
+// - 「司機 XXX」自動帶出司機資料（陳俊豪 / 陳正紘）
 
-// 主入口（CommonJS）
+// ---------------------- LINE Webhook 主入口 ----------------------
 async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(200).send("OK");
@@ -29,7 +36,7 @@ async function handler(req, res) {
     if (event.type === "message" && event.message.type === "text") {
       const userText = (event.message.text || "").trim();
 
-      // 司機快捷：陳俊豪
+      // 仍保留原本的兩個「單獨打名字就吐司機資料」指令
       if (userText === "陳俊豪") {
         const replyText =
           "司機：陳俊豪\n" +
@@ -40,7 +47,6 @@ async function handler(req, res) {
         continue;
       }
 
-      // 司機快捷：陳正紘
       if (userText === "陳正紘") {
         const replyText =
           "司機：陳正紘\n" +
@@ -51,7 +57,7 @@ async function handler(req, res) {
         continue;
       }
 
-      // 其他文字 → 視為派車單內容，進行解析
+      // 其他文字 → 視為派車單內容
       const replyText = await generateDispatchSheet(userText);
       await replyMessage(event.replyToken, replyText);
     }
@@ -117,6 +123,32 @@ function chineseDigitToNumber(ch) {
   return map[ch] || null;
 }
 
+// 司機資料表（之後要加新司機可以在這邊加）
+function lookupDriver(name) {
+  if (name === "陳俊豪") {
+    return {
+      driver_name: "陳俊豪",
+      driver_phone: "0973550190",
+      car_plate: "RFD-",
+      car_type: "豪華新大T保母車",
+    };
+  }
+  if (name === "陳正紘") {
+    return {
+      driver_name: "陳正紘",
+      driver_phone: "0937429798",
+      car_plate: "RFD-",
+      car_type: "豪華新大T保母車",
+    };
+  }
+  return {
+    driver_name: name || "",
+    driver_phone: "",
+    car_plate: "",
+    car_type: "",
+  };
+}
+
 // 主解析函式
 function parseDispatch(rawText) {
   const data = {
@@ -133,6 +165,9 @@ function parseDispatch(rawText) {
     remark: "",
     payment: "",
     car_type: "",
+    driver_name: "",
+    driver_phone: "",
+    car_plate: "",
   };
 
   const safeText = (rawText || "").trim();
@@ -152,7 +187,7 @@ function parseDispatch(rawText) {
     }
   }
 
-  // 2) 日期：抓第一個 2/27、02/27、2026/02/27 這種
+  // 2) 日期
   let dateMatch =
     safeText.match(/(\d{4}[\/.-]\d{1,2}[\/.-]\d{1,2})/) ||
     safeText.match(/(\d{1,2}[\/.-]\d{1,2})/);
@@ -163,16 +198,16 @@ function parseDispatch(rawText) {
     });
   }
 
-  // 3) flight：BR166/06:15、JX851/19:05
+  // 3) 航班 flight：BR166/06:15、JX851/19:05
   const flightMatch = safeText.match(/([A-Z0-9]{2,}\s*\/\s*\d{1,2}:\d{2})/);
   if (flightMatch) {
-    data.flight = flightMatch[1].replace(/\s*/g, "");
+    data.flight = flightMatch[1].replace(/\s*/g, ""); // 去掉多餘空白
     lines.forEach((line, idx) => {
       if (line.includes(flightMatch[1].trim())) usedLineIndex.add(idx);
     });
   }
 
-  // 4) pickup_time：載客時間優先，其次接機用航班時間
+  // 4) pickup_time：載客時間優先，接機則可用航班時間
   const pickupMatch = safeText.match(/載客時間\s*([0-2]?\d:\d{2})/);
   if (pickupMatch) {
     data.pickup_time = pickupMatch[1];
@@ -181,22 +216,33 @@ function parseDispatch(rawText) {
     if (t) data.pickup_time = t[1];
   }
 
-  // 5) 電話 + 姓名：電話上一行當姓名
+  // 5) 電話 + 姓名
+  //   ➤ 先看「同一行」有沒有在電話前面的文字（例如：'陳沛暄0988xxxxxx'）
+  //   ➤ 有就用同一行的名字；沒有才退回用上一行
   let phoneIdx = -1;
   lines.forEach((line, idx) => {
     const m = line.match(/(09\d{8})/);
     if (m && phoneIdx === -1) {
       phoneIdx = idx;
       data.guest_phone = m[1];
+
+      const namePart = line.slice(0, m.index).trim();
+      if (namePart) {
+        // 同一行的電話前文字當姓名
+        data.guest_name = namePart;
+        usedLineIndex.add(idx);
+      } else if (idx > 0) {
+        // 沒有的話才退回上一行
+        data.guest_name = lines[idx - 1];
+        usedLineIndex.add(idx);
+        usedLineIndex.add(idx - 1);
+      } else {
+        usedLineIndex.add(idx);
+      }
     }
   });
-  if (phoneIdx > 0) {
-    data.guest_name = lines[phoneIdx - 1];
-    usedLineIndex.add(phoneIdx);
-    usedLineIndex.add(phoneIdx - 1);
-  }
 
-  // 6) 地址：有序號 + 無序號；一行多個地址切開
+  // 6) 地址：有序號 + 無序號；一行多個地址拆開
   const addrCandidates = [];
 
   // (a) 有序號
@@ -207,7 +253,7 @@ function parseDispatch(rawText) {
     }
   });
 
-  // (b) 無序號但像地址
+  // (b) 無序號但看起來像地址
   lines.forEach((line, idx) => {
     const hasAddressMarker = /[市區鄉鎮路街巷村里號]/.test(line);
     const hasPhone = /09\d{8}/.test(line);
@@ -218,7 +264,6 @@ function parseDispatch(rawText) {
     }
   });
 
-  // (c) 一行多個地址切開
   const addrSet = new Set();
   addrCandidates.forEach((item) => {
     const segs = item.addr.split(/[、，,；;]/);
@@ -309,7 +354,26 @@ function parseDispatch(rawText) {
     data.car_type = "Touran";
   }
 
-  // 11) 備註：其他看起來不屬於以上任一類的句子
+  // 11) 司機行：例如「司機 陳俊豪」
+  lines.forEach((line, idx) => {
+    const m = line.match(/^司機[:：]?\s*(\S+)/);
+    if (m) {
+      const driverName = m[1].trim();
+      const info = lookupDriver(driverName);
+      data.driver_name = info.driver_name;
+      data.driver_phone = info.driver_phone;
+      data.car_plate = info.car_plate;
+
+      // 如果前面沒抓到車型，這裡可以順便補上
+      if (!data.car_type && info.car_type) {
+        data.car_type = info.car_type;
+      }
+
+      usedLineIndex.add(idx);
+    }
+  });
+
+  // 12) 備註：其他看起來不屬於以上任一類的句子
   const remarkLines = [];
   lines.forEach((line, idx) => {
     if (!line) return;
@@ -329,6 +393,7 @@ function parseDispatch(rawText) {
       // 地址行 → 已經進 addresses，就不丟備註
       return;
     }
+    if (/^司機[:：]?/.test(line)) return; // 司機行已經處理
 
     remarkLines.push(line);
   });
@@ -366,6 +431,9 @@ function buildDispatchText(data) {
   const remark = data.remark || "";
   const carType = data.car_type || "";
   const payment = data.payment || "";
+  const driverName = data.driver_name || "";
+  const driverPhone = data.driver_phone || "";
+  const carPlate = data.car_plate || "";
 
   const addressesBlock =
     addresses.length > 0
@@ -386,9 +454,9 @@ function buildDispatchText(data) {
     `◆行李：${luggage}\n` +
     `◆有無安全座椅：${childSeat}\n\n` +
     `🌟備註：\n${remark}\n\n` +
-    `司機：\n` +
-    `電話：\n` +
-    `車號：\n` +
+    `司機：${driverName}\n` +
+    `電話：${driverPhone}\n` +
+    `車號：${carPlate}\n` +
     `車型：${carType}\n` +
     `➖➖➖➖➖➖➖➖➖➖\n` +
     `收款方式：${payment}`
