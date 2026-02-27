@@ -444,7 +444,7 @@ function parseDispatch(rawText) {
   } else if (/Touran/i.test(safeText)) {
     data.car_type = "Touran";
   } else if (/保母車/.test(safeText) && !data.car_type) {
-    data.car_type = "保母車";
+    data.car_type = "豪華新大T保母車";
   }
 
   // 13) 司機行：司機陳俊豪 / 司機 陳俊豪
