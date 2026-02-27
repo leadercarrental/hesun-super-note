@@ -1,5 +1,5 @@
 // api/line-webhook.js
-// 賀森超強筆記 — 純規則 Pro 版 v3
+// 賀森超強筆記 — 純規則 Pro 版 v4
 
 // ---------------------- LINE Webhook 主入口 ----------------------
 async function handler(req, res) {
@@ -94,6 +94,11 @@ async function replyMessage(replyToken, text) {
 
 // ---------------------- 純規則解析區 ----------------------
 
+// 把開頭的符號（▪️•●- 等）去掉
+function stripBullet(line) {
+  return line.replace(/^[\u2022\u2023\u25E6\u2043\u2219▪•●▶️➤\-]+[\s]*/, "");
+}
+
 // 中文數字 → 阿拉伯數字（簡單版）
 function chineseDigitToNumber(ch) {
   const map = {
@@ -160,9 +165,10 @@ function parseDispatch(rawText) {
   };
 
   const safeText = (rawText || "").trim();
-  const lines = safeText
+
+  let lines = safeText
     .split(/\r?\n/)
-    .map((l) => l.trim())
+    .map((l) => stripBullet(l.trim()))
     .filter((l) => l.length > 0);
 
   const usedLineIndex = new Set();
@@ -176,7 +182,7 @@ function parseDispatch(rawText) {
     }
   }
 
-  // 2) 日期：先看「出發日期」
+  // 2) 日期：優先吃「出發日期」
   let dateMatch =
     safeText.match(/出發日期[:：]\s*([0-9]{1,2}[\/.-][0-9]{1,2})/) ||
     safeText.match(/(\d{4}[\/.-]\d{1,2}[\/.-]\d{1,2})/) ||
@@ -189,47 +195,76 @@ function parseDispatch(rawText) {
   }
 
   // 3) 航班 flight
-  // 3-1 專門吃「航班編號：CX464【21:20】」
-  let flightMatchLabel = safeText.match(
-    /航班編號[:：]\s*([A-Z0-9]{2,})[^\d]{0,4}([0-2]?\d:\d{2})/
-  );
-  if (flightMatchLabel) {
-    data.flight = `${flightMatchLabel[1]}/${flightMatchLabel[2]}`;
-    lines.forEach((line, idx) => {
-      if (line.includes("航班編號")) usedLineIndex.add(idx);
-    });
-  } else {
-    // 3-2 原本的：BR166/06:15
-    const flightMatch = safeText.match(
-      /([A-Z0-9]{2,}\s*\/\s*[0-2]?\d:\d{2})/
-    );
-    if (flightMatch) {
-      data.flight = flightMatch[1].replace(/\s*/g, "");
-      lines.forEach((line, idx) => {
-        if (line.includes(flightMatch[1].trim())) usedLineIndex.add(idx);
-      });
-    }
-  }
+  let baseFlight = "";
+  let flightTime = "";
 
-  // 4) pickup_time：載客時間優先，接機用航班時間
-  const pickupMatch = safeText.match(/載客時間\s*([0-2]?\d:\d{2})/);
-  if (pickupMatch) {
-    data.pickup_time = pickupMatch[1];
-  } else if (data.job_tag === "接機" && data.flight) {
-    const t = data.flight.match(/(\d{1,2}:\d{2})/);
-    if (t) data.pickup_time = t[1];
-  }
-
-  // 5) 先吃「聯絡人：XXX」當貴賓
+  // 3-1 「航班名稱：星宇航空JX821」
   lines.forEach((line, idx) => {
-    const m = line.match(/^聯絡人[:：]\s*(.+)/);
+    const m = line.match(/^航班名稱[:：]\s*(.+)/);
     if (m) {
-      data.guest_name = m[1].trim();
+      baseFlight = m[1].trim();
       usedLineIndex.add(idx);
     }
   });
 
-  // 6) 電話 + 姓名：電話行若有前綴「電話：」，不拿來當姓名
+  // 3-2 「航班落地時間：14:35」
+  lines.forEach((line, idx) => {
+    const m = line.match(/(航班落地時間|落地時間|抵達時間)[^0-9]*([0-2]?\d:\d{2})/);
+    if (m) {
+      flightTime = m[2];
+      usedLineIndex.add(idx);
+    }
+  });
+
+  // 3-3 舊格式 BR166/06:15 或 航班編號：CX464【21:20】
+  if (!baseFlight) {
+    const flightLabel = safeText.match(
+      /航班編號[:：]\s*([A-Z0-9]{2,})[^\d]{0,4}([0-2]?\d:\d{2})/
+    );
+    if (flightLabel) {
+      baseFlight = `${flightLabel[1]}`;
+      flightTime = flightTime || flightLabel[2];
+      lines.forEach((line, idx) => {
+        if (line.includes("航班編號")) usedLineIndex.add(idx);
+      });
+    } else {
+      const flightMatch = safeText.match(
+        /([A-Z0-9]{2,}\s*\/\s*[0-2]?\d:\d{2})/
+      );
+      if (flightMatch) {
+        data.flight = flightMatch[1].replace(/\s*/g, "");
+        const t = data.flight.match(/(\d{1,2}:\d{2})/);
+        if (t) flightTime = flightTime || t[1];
+        lines.forEach((line, idx) => {
+          if (line.includes(flightMatch[1].trim())) usedLineIndex.add(idx);
+        });
+      }
+    }
+  }
+
+  if (baseFlight) {
+    data.flight = flightTime ? `${baseFlight}/${flightTime}` : baseFlight;
+  }
+
+  // 4) pickup_time：載客時間優先，接機用落地時間
+  const pickupMatch = safeText.match(/載客時間\s*([0-2]?\d:\d{2})/);
+  if (pickupMatch) {
+    data.pickup_time = pickupMatch[1];
+  } else if (!data.pickup_time && data.job_tag === "接機" && flightTime) {
+    data.pickup_time = flightTime;
+  }
+
+  // 5) 先吃「姓名：」「聯絡人：」當貴賓
+  lines.forEach((line, idx) => {
+    if (data.guest_name) return;
+    let m = line.match(/^(姓名|聯絡人)[:：]\s*(.+)/);
+    if (m) {
+      data.guest_name = m[2].trim();
+      usedLineIndex.add(idx);
+    }
+  });
+
+  // 6) 電話 + 姓名（補姓名）
   let phoneIdx = -1;
   lines.forEach((line, idx) => {
     const m = line.match(/(09\d{8})/);
@@ -237,16 +272,15 @@ function parseDispatch(rawText) {
       phoneIdx = idx;
       data.guest_phone = m[1];
 
-      // 如果前面還沒從「聯絡人」取得姓名，才補
       if (!data.guest_name) {
         let before = line.slice(0, m.index).trim();
-        // 去掉「電話：」「Tel:」這類前綴
         before = before.replace(/^電話[:：]?\s*/i, "").trim();
         if (before) {
           data.guest_name = before;
           usedLineIndex.add(idx);
         } else if (idx > 0) {
-          data.guest_name = lines[idx - 1];
+          let prev = lines[idx - 1].replace(/^(姓名|聯絡人)[:：]\s*/, "");
+          data.guest_name = prev.trim();
           usedLineIndex.add(idx);
           usedLineIndex.add(idx - 1);
         } else {
@@ -261,7 +295,7 @@ function parseDispatch(rawText) {
   // 7) 地址：有序號 + 無序號；一行多個地址拆開
   const addrCandidates = [];
 
-  // (a) 有序號
+  // (a) 有序號行
   lines.forEach((line, idx) => {
     if (/^\d+[\.\s、]/.test(line) || /^[１２３４５６７８９]/.test(line)) {
       let addr = line.replace(/^[\d１２３４５６７８９]+[.\s、]?/, "").trim();
@@ -269,18 +303,21 @@ function parseDispatch(rawText) {
     }
   });
 
-  // (b) 無序號但像地址，排除「航班編號」
+  // (b) 無序號但像地址，排除航班
   lines.forEach((line, idx) => {
-    if (line.includes("航班編號")) return; // 避免航班被當地址
-    const hasAddressMarker = /[市區鄉鎮路街巷村里號]/.test(line);
-    const hasPhone = /09\d{8}/.test(line);
-    const looksLikePayment = /收\s*(現金|匯款|刷卡)?\s*[\d,]+/.test(line);
-    const looksLikeFlight = /[A-Z0-9]{2,}\s*\/\s*\d{1,2}:\d{2}/.test(line);
+    if (line.includes("航班編號")) return;
+    let addrLine = line.trim();
+
+    // 去掉常見 label
+    addrLine = addrLine.replace(/^(上車地點|下車地點|地址)[:：]\s*/, "");
+    addrLine = addrLine.replace(/^(再加一個點|再加一個點：)\s*/, "");
+
+    const hasAddressMarker = /[市區鄉鎮路街巷村里號]/.test(addrLine);
+    const hasPhone = /09\d{8}/.test(addrLine);
+    const looksLikePayment = /收\s*(現金|匯款|刷卡)?\s*[\d,]+/.test(addrLine);
+    const looksLikeFlight = /[A-Z0-9]{2,}\s*\/\s*\d{1,2}:\d{2}/.test(addrLine);
     if (hasAddressMarker && !hasPhone && !looksLikePayment && !looksLikeFlight) {
-      let addr = line.trim();
-      // 去掉「上車地點：」「下車地點：」「地址：」
-      addr = addr.replace(/^(上車地點|下車地點|地址)[:：]\s*/, "");
-      addrCandidates.push({ addr, idx });
+      addrCandidates.push({ addr: addrLine, idx });
     }
   });
 
@@ -299,7 +336,7 @@ function parseDispatch(rawText) {
     });
   });
 
-  // 8) 人數：先吃「乘車人數：4」
+  // 8) 人數：乘車人數 / 人數
   let pc = "";
   const peopleLabeled = safeText.match(
     /(乘車人數|人數)[:：]\s*([0-9]+)/
@@ -328,27 +365,43 @@ function parseDispatch(rawText) {
     }
   });
 
-  // 9) 行李：行李數量：4
-  const luggageMatch = safeText.match(/行李(數量)?[:：]\s*([0-9]+)/);
+  // 9) 行李：行李數量 / 行李件數
+  const luggageMatch =
+    safeText.match(/行李(數量)?(件數)?[:：]\s*([0-9\-~＋+]+)/) ||
+    safeText.match(/行李[^0-9]*([0-9\-~＋+]+)/);
   if (luggageMatch) {
-    data.luggage = luggageMatch[2];
+    data.luggage = luggageMatch[3] || luggageMatch[1];
   }
   lines.forEach((line, idx) => {
-    if (/行李(數量)?[:：]/.test(line)) {
+    if (/行李(數量)?(件數)?[:：]/.test(line)) {
       usedLineIndex.add(idx);
     }
   });
 
-  // 10) 收款方式：收現金7000 / 收 7000 / 收款 現金 7000
-  const payMatch =
-    safeText.match(/收款[:：]?\s*(現金|匯款|刷卡)?\s*([\d,]+)/) ||
-    safeText.match(/收\s*(現金|匯款|刷卡)?\s*([\d,]+)/);
-  if (payMatch) {
-    const method = payMatch[1] || "現金";
-    const amount = payMatch[2];
-    data.payment = `${method} ${amount} 元`;
+  // 10) 收款方式：費用 / 收 / 收款
+  const payMatchLabel = safeText.match(
+    /費用[:：]\s*([^\d\$元]*)\$?\s*([\d,]+)/
+  );
+  if (payMatchLabel) {
+    let methodRaw = (payMatchLabel[1] || "").trim();
+    let method = "";
+    if (/現金/.test(methodRaw)) method = "現金";
+    else if (/匯款/.test(methodRaw)) method = "匯款";
+    else if (/刷卡/.test(methodRaw)) method = "刷卡";
+    const amount = payMatchLabel[2];
+    data.payment = `${method || ""} ${amount} 元`.trim();
+  } else {
+    const payMatch =
+      safeText.match(/收款[:：]?\s*(現金|匯款|刷卡)?\s*([\d,]+)/) ||
+      safeText.match(/收\s*(現金|匯款|刷卡)?\s*([\d,]+)/);
+    if (payMatch) {
+      const method = payMatch[1] || "現金";
+      const amount = payMatch[2];
+      data.payment = `${method} ${amount} 元`;
+    }
   }
   lines.forEach((line, idx) => {
+    if (/費用[:：]/.test(line)) usedLineIndex.add(idx);
     if (/收\s*(現金|匯款|刷卡)?\s*[\d,]+/.test(line) || /收款/.test(line)) {
       usedLineIndex.add(idx);
     }
@@ -390,6 +443,8 @@ function parseDispatch(rawText) {
     data.car_type = "Caddy";
   } else if (/Touran/i.test(safeText)) {
     data.car_type = "Touran";
+  } else if (/保母車/.test(safeText) && !data.car_type) {
+    data.car_type = "保母車";
   }
 
   // 13) 司機行：司機陳俊豪 / 司機 陳俊豪
@@ -414,16 +469,20 @@ function parseDispatch(rawText) {
 
     if (/09\d{8}/.test(line)) return;
     if (jobTags.some((t) => line.includes(t))) return;
-    if (/[A-Z0-9]{2,}\s*\/\s*\d{1,2}:\d{2}/.test(line)) return;
+    if (/^日期/.test(line)) return;
+    if (/^航班名稱/.test(line)) return;
+    if (/航班落地時間|落地時間|抵達時間/.test(line)) return;
+    if (/航班編號[:：]/.test(line)) return;
     if (/出發日期[:：]/.test(line)) return;
     if (/聯絡人[:：]/.test(line)) return;
+    if (/姓名[:：]/.test(line)) return;
     if (/電話[:：]/.test(line)) return;
     if (/乘車人數|人數/.test(line)) return;
-    if (/行李(數量)?[:：]/.test(line)) return;
-    if (/上車地點[:：]/.test(line)) return; // 若你希望上車地點也進地址可改這裡
+    if (/行李(數量)?(件數)?[:：]/.test(line)) return;
+    if (/上車地點[:：]/.test(line)) return;
     if (/下車地點[:：]/.test(line)) return;
     if (/其他備註[:：]/.test(line)) return;
-    if (/航班編號[:：]/.test(line)) return;
+    if (/費用[:：]/.test(line)) return;
     if (/收款/.test(line) || /收\s*(現金|匯款|刷卡)?\s*[\d,]+/.test(line)) return;
     if (
       /^\d{1,2}[\/.-]\d{1,2}/.test(line) ||
